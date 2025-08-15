@@ -1,9 +1,9 @@
 module.exports = {
-	root: true,
-	extends: ['@hokify'],
-	parserOptions: {
-		project: './tsconfig.eslint.json'
-	},
+  root: true,
+  extends: ['@hokify'],
+  parserOptions: {
+    project: './tsconfig.eslint.json'
+  },
   overrides: [
     {
       files: ['*.test.ts'],
