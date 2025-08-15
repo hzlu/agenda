@@ -1,35 +1,33 @@
 /* eslint-disable no-console */
-import { Db } from 'mongodb';
 import * as delay from 'delay';
-import { mockMongo } from './helpers/mock-mongodb';
+import type { Sequelize } from 'sequelize';
+import { mockSequelize } from './helpers/mock-sequelize';
 
 import { Agenda } from '../src';
 
-// agenda instances
 let agenda: Agenda;
-// mongo db connection db instance
-let mongoDb: Db;
+let sequelize: Sequelize;
 
 const clearJobs = async (): Promise<void> => {
-  if (mongoDb) {
-    await mongoDb.collection('agendaJobs').deleteMany({});
+  if (sequelize) {
+    await sequelize.model('AgendaJobs').destroy({ where: {} });
   }
 };
 
 const jobType = 'do work';
-const jobProcessor = () => { };
+const jobProcessor = () => {};
 
 describe('Retry', () => {
   beforeEach(async () => {
-    if (!mongoDb) {
-      const mockedMongo = await mockMongo();
-      mongoDb = mockedMongo.mongo.db();
+    if (!sequelize) {
+      const mockedSequelize = await mockSequelize();
+      sequelize = mockedSequelize.sequelize;
     }
 
     return new Promise(resolve => {
       agenda = new Agenda(
         {
-          mongo: mongoDb
+          sequelize
         },
         async () => {
           await delay(50);
@@ -48,8 +46,6 @@ describe('Retry', () => {
     await delay(50);
     await agenda.stop();
     await clearJobs();
-    // await mongoClient.disconnect();
-    // await jobs._db.close();
   });
 
   it('should retry a job', async () => {
@@ -75,7 +71,7 @@ describe('Retry', () => {
     });
 
     const successPromise = new Promise(resolve => {
-      agenda.on('success:a job', resolve)
+      agenda.on('success:a job', resolve);
     });
 
     await agenda.now('a job');

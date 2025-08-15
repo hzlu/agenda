@@ -1,6 +1,5 @@
 import * as date from 'date.js';
 import * as debug from 'debug';
-import { ObjectId } from 'mongodb';
 import { ChildProcess, fork } from 'child_process';
 import type { Agenda } from './index';
 import type { DefinitionProcessor } from './types/JobDefinition';
@@ -205,7 +204,13 @@ export class Job<DATA = unknown | void> {
    * @param reason
    */
   fail(reason: Error | string): this {
-    this.attrs.failReason = reason instanceof Error ? reason.message : reason;
+    /* eslint-disable no-nested-ternary */
+    this.attrs.failReason =
+      reason instanceof Error
+        ? reason.message
+        : typeof reason === 'string'
+        ? reason
+        : JSON.stringify(reason);
     this.attrs.failCount = (this.attrs.failCount || 0) + 1;
     const now = new Date();
     this.attrs.failedAt = now;
@@ -493,4 +498,4 @@ export class Job<DATA = unknown | void> {
   }
 }
 
-export type JobWithId = Job & { attrs: IJobParameters & { _id: ObjectId } };
+export type JobWithId = Job & { attrs: IJobParameters & { _id: string } };

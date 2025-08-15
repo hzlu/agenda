@@ -1,24 +1,19 @@
 /* eslint-disable no-console,no-unused-expressions,@typescript-eslint/no-unused-expressions */
-
 import * as delay from 'delay';
-import { Db } from 'mongodb';
+import type { Sequelize } from 'sequelize';
 import { expect } from 'chai';
-import { mockMongo } from './helpers/mock-mongodb';
+import { mockSequelize } from './helpers/mock-sequelize';
 
 import { Agenda } from '../src';
-import { hasMongoProtocol } from '../src/utils/hasMongoProtocol';
 import { Job } from '../src/Job';
 
 // agenda instances
 let globalAgenda: Agenda;
-// connection string to mongodb
-let mongoCfg: string;
-// mongo db connection db instance
-let mongoDb: Db;
+let sequelize: Sequelize;
 
 const clearJobs = async (): Promise<void> => {
-  if (mongoDb) {
-    await mongoDb.collection('agendaJobs').deleteMany({});
+  if (sequelize) {
+    await sequelize.model('AgendaJobs').destroy({ where: {} });
   }
 };
 
@@ -29,16 +24,15 @@ const jobProcessor = () => {};
 
 describe('Agenda', () => {
   beforeEach(async () => {
-    if (!mongoDb) {
-      const mockedMongo = await mockMongo();
-      mongoCfg = mockedMongo.uri;
-      mongoDb = mockedMongo.mongo.db();
+    if (!sequelize) {
+      const mockedSequelize = await mockSequelize();
+      sequelize = mockedSequelize.sequelize;
     }
 
     return new Promise(resolve => {
       globalAgenda = new Agenda(
         {
-          mongo: mongoDb
+          sequelize
         },
         async () => {
           await delay(50);
@@ -69,35 +63,22 @@ describe('Agenda', () => {
 
   describe('configuration methods', () => {
     it('sets the _db directly when passed as an option', () => {
-      const agendaDb = new Agenda({ mongo: mongoDb });
+      const agendaDb = new Agenda({ sequelize });
       expect(agendaDb.db).to.not.equal(undefined);
     });
   });
 
   describe('configuration methods', () => {
-    describe('mongo connection tester', () => {
-      it('passing a valid server connection string', () => {
-        expect(hasMongoProtocol(mongoCfg)).to.equal(true);
-      });
-
-      it('passing a valid multiple server connection string', () => {
-        expect(hasMongoProtocol(`mongodb+srv://localhost/agenda-test`)).to.equal(true);
-      });
-
-      it('passing an invalid connection string', () => {
-        expect(hasMongoProtocol(`localhost/agenda-test`)).to.equal(false);
-      });
-    });
     describe('mongo', () => {
       it('sets the _db directly', () => {
         const agenda = new Agenda();
-        agenda.mongo(mongoDb);
+        agenda.sequelize(sequelize);
         expect(agenda.db).to.not.equal(undefined);
       });
 
       it('returns itself', async () => {
         const agenda = new Agenda();
-        expect(await agenda.mongo(mongoDb)).to.equal(agenda);
+        expect(await agenda.sequelize(sequelize)).to.equal(agenda);
       });
     });
 
@@ -302,158 +283,6 @@ describe('Agenda', () => {
       });
     });
 
-    describe('unique', () => {
-      describe('should demonstrate unique contraint', () => {
-        it('should modify one job when unique matches', async () => {
-          const job1 = await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: true
-            })
-            .unique({
-              'data.type': 'active',
-              'data.userId': '123'
-            })
-            .schedule('now')
-            .save();
-
-          await delay(100);
-
-          const job2 = await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: false
-            })
-            .unique({
-              'data.type': 'active',
-              'data.userId': '123'
-            })
-            .schedule('now')
-            .save();
-
-          expect(job1.attrs.nextRunAt!.toISOString()).not.to.equal(
-            job2.attrs.nextRunAt!.toISOString()
-          );
-
-          mongoDb
-            .collection('agendaJobs')
-            .find({
-              name: 'unique job'
-            })
-            .toArray((err, jobs) => {
-              if (err) {
-                throw err;
-              }
-
-              expect(jobs).to.have.length(1);
-            });
-        });
-
-        it('should not modify job when unique matches and insertOnly is set to true', async () => {
-          const job1 = await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: true
-            })
-            .unique(
-              {
-                'data.type': 'active',
-                'data.userId': '123'
-              },
-              {
-                insertOnly: true
-              }
-            )
-            .schedule('now')
-            .save();
-
-          const job2 = await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: false
-            })
-            .unique(
-              {
-                'data.type': 'active',
-                'data.userId': '123'
-              },
-              {
-                insertOnly: true
-              }
-            )
-            .schedule('now')
-            .save();
-
-          expect(job1.attrs.nextRunAt!.toISOString()).to.equal(job2.attrs.nextRunAt!.toISOString());
-
-          mongoDb
-            .collection('agendaJobs')
-            .find({
-              name: 'unique job'
-            })
-            .toArray((err, jobs) => {
-              if (err) {
-                throw err;
-              }
-
-              expect(jobs).to.have.length(1);
-            });
-        });
-      });
-
-      describe('should demonstrate non-unique contraint', () => {
-        it("should create two jobs when unique doesn't match", async () => {
-          const time = new Date(Date.now() + 1000 * 60 * 3);
-          const time2 = new Date(Date.now() + 1000 * 60 * 4);
-
-          await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: true
-            })
-            .unique({
-              'data.type': 'active',
-              'data.userId': '123',
-              nextRunAt: time
-            })
-            .schedule(time)
-            .save();
-
-          await globalAgenda
-            .create('unique job', {
-              type: 'active',
-              userId: '123',
-              other: false
-            })
-            .unique({
-              'data.type': 'active',
-              'data.userId': '123',
-              nextRunAt: time2
-            })
-            .schedule(time)
-            .save();
-
-          mongoDb
-            .collection('agendaJobs')
-            .find({
-              name: 'unique job'
-            })
-            .toArray((err, jobs) => {
-              if (err) {
-                throw err;
-              }
-
-              expect(jobs).to.have.length(2);
-            });
-        });
-      });
-    });
-
     describe('now', () => {
       it('returns a job', async () => {
         expect(await globalAgenda.now('send email')).to.to.be.an.instanceof(Job);
@@ -602,55 +431,6 @@ describe('Agenda', () => {
     });
   });
 
-  describe('ensureIndex findAndLockNextJobIndex', () => {
-    it('ensureIndex-Option false does not create index findAndLockNextJobIndex', async () => {
-      const agenda = new Agenda({
-        mongo: mongoDb,
-        ensureIndex: false
-      });
-
-      agenda.define('someJob', jobProcessor);
-      await agenda.create('someJob', 1).save();
-
-      const listIndex = await mongoDb.command({ listIndexes: 'agendaJobs' });
-      expect(listIndex.cursor.firstBatch).to.have.lengthOf(1);
-      expect(listIndex.cursor.firstBatch[0].name).to.be.equal('_id_');
-    });
-
-    it('ensureIndex-Option true does create index findAndLockNextJobIndex', async () => {
-      const agenda = new Agenda({
-        mongo: mongoDb,
-        ensureIndex: true
-      });
-
-      agenda.define('someJob', jobProcessor);
-      await agenda.create('someJob', 1).save();
-
-      const listIndex = await mongoDb.command({ listIndexes: 'agendaJobs' });
-      expect(listIndex.cursor.firstBatch).to.have.lengthOf(2);
-      expect(listIndex.cursor.firstBatch[0].name).to.be.equal('_id_');
-      expect(listIndex.cursor.firstBatch[1].name).to.be.equal('findAndLockNextJobIndex');
-    });
-
-    it('creating two agenda-instances with ensureIndex-Option true does not throw an error', async () => {
-      const agenda = new Agenda({
-        mongo: mongoDb,
-        ensureIndex: true
-      });
-
-      agenda.define('someJob', jobProcessor);
-      await agenda.create('someJob', 1).save();
-
-      const secondAgenda = new Agenda({
-        mongo: mongoDb,
-        ensureIndex: true
-      });
-
-      secondAgenda.define('someJob', jobProcessor);
-      await secondAgenda.create('someJob', 1).save();
-    });
-  });
-
   describe('process jobs', () => {
     // eslint-disable-line prefer-arrow-callback
     it('do not run failed jobs again', async () => {
@@ -675,7 +455,7 @@ describe('Agenda', () => {
         errorCalled = true;
       });
 
-      globalAgenda.processEvery(100);
+      globalAgenda.processEvery(200);
       await globalAgenda.start();
 
       await globalAgenda.now('failing job');

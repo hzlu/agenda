@@ -1,61 +1,89 @@
+/* eslint-disable max-classes-per-file */
+/* eslint-disable @typescript-eslint/no-empty-interface */
+/* eslint-disable @typescript-eslint/lines-between-class-members */
 import * as debug from 'debug';
-import {
-  Collection,
-  Db,
-  Filter,
-  FindOneAndUpdateOptions,
-  MongoClient,
-  MongoClientOptions,
-  ObjectId,
-  Sort,
-  UpdateFilter
-} from 'mongodb';
+import { Sequelize, DataTypes, Model } from 'sequelize';
 import type { Job, JobWithId } from './Job';
 import type { Agenda } from './index';
-import type { IDatabaseOptions, IDbConfig, IMongoOptions } from './types/DbOptions';
+import type {
+  IDatabaseOptions,
+  IDbConfig,
+  ISequelizeOptions,
+  Filter,
+  Sort
+} from './types/DbOptions';
 import type { IJobParameters } from './types/JobParameters';
-import { hasMongoProtocol } from './utils/hasMongoProtocol';
+import {
+  convertMongoFilterToSequelizeWhere,
+  convertMongoSortToSequelizeOrder
+} from './utils/filterToWhere';
 
 const log = debug('agenda:db');
 
+// 定义创建时的属性（可选字段）
+interface IJobCreationAttributes extends Omit<IJobParameters, '_id'> {}
+
+// 定义模型类
+class AgendaJob extends Model<IJobParameters, IJobCreationAttributes> {
+  public _id: string;
+  public name: string;
+  public priority: number;
+  public nextRunAt: Date | null;
+  public type: 'normal' | 'single';
+  public lockedAt?: Date | null;
+  public lastFinishedAt?: Date;
+  public failedAt?: Date;
+  public failCount?: number;
+  public failReason?: string;
+  public repeatTimezone?: string;
+  public lastRunAt?: Date;
+  public repeatInterval?: string | number;
+  public data: unknown | void;
+  public repeatAt?: string;
+  public disabled?: boolean;
+  public progress?: number;
+  public lastModifiedBy?: string;
+  /** forks a new node sub process for executing this job */
+  public fork?: boolean;
+}
 /**
  * @class
  */
 export class JobDbRepository {
-  collection: Collection<IJobParameters>;
+  collection: typeof AgendaJob;
 
   constructor(
     private agenda: Agenda,
-    private connectOptions: (IDatabaseOptions | IMongoOptions) & IDbConfig
+    private connectOptions: (IDatabaseOptions | ISequelizeOptions) & IDbConfig
   ) {
     this.connectOptions.sort = this.connectOptions.sort || { nextRunAt: 1, priority: -1 };
   }
 
-  private async createConnection(): Promise<Db> {
+  private async createConnection(): Promise<Sequelize> {
     const { connectOptions } = this;
     if (this.hasDatabaseConfig(connectOptions)) {
       log('using database config', connectOptions);
-      return this.database(connectOptions.db.address, connectOptions.db.options);
+      return this.database(connectOptions.db);
     }
 
     if (this.hasMongoConnection(connectOptions)) {
       log('using passed in mongo connection');
-      return connectOptions.mongo;
+      return connectOptions.sequelize;
     }
 
     throw new Error('invalid db config, or db config not found');
   }
 
-  private hasMongoConnection(connectOptions: unknown): connectOptions is IMongoOptions {
-    return !!(connectOptions as IMongoOptions)?.mongo;
+  private hasMongoConnection(connectOptions: unknown): connectOptions is ISequelizeOptions {
+    return !!(connectOptions as ISequelizeOptions)?.sequelize;
   }
 
   private hasDatabaseConfig(connectOptions: unknown): connectOptions is IDatabaseOptions {
-    return !!(connectOptions as IDatabaseOptions)?.db?.address;
+    return !!(connectOptions as IDatabaseOptions)?.db?.host;
   }
 
   async getJobById(id: string) {
-    return this.collection.findOne({ _id: new ObjectId(id) });
+    return this.collection.findByPk(id);
   }
 
   async getJobs(
@@ -64,33 +92,50 @@ export class JobDbRepository {
     limit = 0,
     skip = 0
   ): Promise<IJobParameters[]> {
-    return this.collection.find(query).sort(sort).limit(limit).skip(skip).toArray();
+    const jobs = await this.collection.findAll({
+      where: convertMongoFilterToSequelizeWhere(query),
+      offset: skip,
+      order: convertMongoSortToSequelizeOrder(sort),
+      limit
+    });
+    return jobs.map(j => j.toJSON());
   }
 
   async removeJobs(query: Filter<IJobParameters>): Promise<number> {
-    const result = await this.collection.deleteMany(query);
-    return result.deletedCount || 0;
+    const result = await this.collection.destroy({
+      where: convertMongoFilterToSequelizeWhere(query)
+    });
+    return result || 0;
   }
 
   async getQueueSize(): Promise<number> {
-    return this.collection.countDocuments({ nextRunAt: { $lt: new Date() } });
+    const query = { nextRunAt: { $lt: new Date() } };
+    return this.collection.count({
+      where: convertMongoFilterToSequelizeWhere(query)
+    });
   }
 
   async unlockJob(job: Job): Promise<void> {
     // only unlock jobs which are not currently processed (nextRunAT is not null)
-    await this.collection.updateOne(
-      { _id: job.attrs._id, nextRunAt: { $ne: null } },
-      { $unset: { lockedAt: true } }
-    );
+    const query = { _id: job.attrs._id, nextRunAt: { $ne: null } };
+    const item = await this.collection.findOne({
+      where: convertMongoFilterToSequelizeWhere(query)
+    });
+    if (item) {
+      await item.update({ lockedAt: null });
+    }
   }
 
   /**
    * Internal method to unlock jobs so that they can be re-run
    */
-  async unlockJobs(jobIds: ObjectId[]): Promise<void> {
-    await this.collection.updateMany(
-      { _id: { $in: jobIds }, nextRunAt: { $ne: null } },
-      { $unset: { lockedAt: true } }
+  async unlockJobs(jobIds: string[]): Promise<void> {
+    const query = { _id: { $in: [...new Set(jobIds)] }, nextRunAt: { $ne: null } };
+    await this.collection.update(
+      { lockedAt: null },
+      {
+        where: convertMongoFilterToSequelizeWhere(query)
+      }
     );
   }
 
@@ -104,21 +149,15 @@ export class JobDbRepository {
       disabled: { $ne: true }
     };
 
-    // Update / options for the MongoDB query
-    const update: UpdateFilter<IJobParameters> = { $set: { lockedAt: new Date() } };
-    const options: FindOneAndUpdateOptions = {
-      returnDocument: 'after',
-      sort: this.connectOptions.sort
-    };
-
-    // Lock the job in MongoDB!
-    const resp = await this.collection.findOneAndUpdate(
-      criteria as Filter<IJobParameters>,
-      update,
-      options
-    );
-
-    return resp?.value || undefined;
+    const item = await this.collection.findOne({
+      where: convertMongoFilterToSequelizeWhere(criteria)
+    });
+    if (item) {
+      await item.update({
+        lockedAt: new Date()
+      });
+    }
+    return item?.toJSON() || undefined;
   }
 
   async getNextJobToRun(
@@ -130,97 +169,177 @@ export class JobDbRepository {
     /**
      * Query used to find job to run
      */
-    const JOB_PROCESS_WHERE_QUERY: Filter<IJobParameters /* Omit<IJobParameters, 'lockedAt'> & { lockedAt?: Date | null } */> =
+    const JOB_PROCESS_WHERE_QUERY1: Filter<IJobParameters /* Omit<IJobParameters, 'lockedAt'> & { lockedAt?: Date | null } */> =
       {
         name: jobName,
         disabled: { $ne: true },
-        $or: [
-          {
-            lockedAt: { $eq: null as any },
-            nextRunAt: { $lte: nextScanAt }
-          },
-          {
-            lockedAt: { $lte: lockDeadline }
-          }
-        ]
+        lockedAt: { $eq: null as any },
+        nextRunAt: { $lte: nextScanAt }
+      };
+    const JOB_PROCESS_WHERE_QUERY2: Filter<IJobParameters /* Omit<IJobParameters, 'lockedAt'> & { lockedAt?: Date | null } */> =
+      {
+        name: jobName,
+        disabled: { $ne: true },
+        lockedAt: { $lte: lockDeadline }
       };
 
-    /**
-     * Query used to set a job as locked
-     */
-    const JOB_PROCESS_SET_QUERY: UpdateFilter<IJobParameters> = { $set: { lockedAt: now } };
-
-    /**
-     * Query used to affect what gets returned
-     */
-    const JOB_RETURN_QUERY: FindOneAndUpdateOptions = {
-      returnDocument: 'after',
-      sort: this.connectOptions.sort
-    };
-
-    // Find ONE and ONLY ONE job and set the 'lockedAt' time so that job begins to be processed
-    const result = await this.collection.findOneAndUpdate(
-      JOB_PROCESS_WHERE_QUERY,
-      JOB_PROCESS_SET_QUERY,
-      JOB_RETURN_QUERY
-    );
-
-    return result.value || undefined;
+    let item = await this.collection.findOne({
+      where: convertMongoFilterToSequelizeWhere(JOB_PROCESS_WHERE_QUERY1),
+      order: [
+        ['priority', 'desc'],
+        ['lockedAt', 'asc'],
+        ['nextRunAt', 'asc']
+      ]
+    });
+    if (!item) {
+      item = await this.collection.findOne({
+        where: convertMongoFilterToSequelizeWhere(JOB_PROCESS_WHERE_QUERY2),
+        order: [
+          ['priority', 'desc'],
+          ['lockedAt', 'asc'],
+          ['nextRunAt', 'asc']
+        ]
+      });
+    }
+    if (item) {
+      await item.update({
+        lockedAt: now
+      });
+    }
+    return item?.toJSON() || undefined;
   }
 
   async connect(): Promise<void> {
     const db = await this.createConnection();
-    log('successful connection to MongoDB', db.options);
+    await db.authenticate();
+    log('successful connection to Sequelize');
 
-    const collection = this.connectOptions.db?.collection || 'agendaJobs';
-
-    this.collection = db.collection(collection);
-    if (log.enabled) {
-      log(
-        `connected with collection: ${collection}, collection size: ${
-          typeof this.collection.estimatedDocumentCount === 'function'
-            ? await this.collection.estimatedDocumentCount()
-            : '?'
-        }`
+    const modelName = this.connectOptions.db?.modelName || 'AgendaJobs';
+    if (!db.isDefined(modelName)) {
+      this.collection = db.define(
+        modelName,
+        {
+          _id: {
+            type: DataTypes.UUID,
+            defaultValue: DataTypes.UUIDV4,
+            primaryKey: true,
+            allowNull: false
+          },
+          name: {
+            type: DataTypes.STRING,
+            allowNull: false
+          },
+          priority: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0
+          },
+          nextRunAt: {
+            field: 'next_run_at',
+            type: DataTypes.DATE(3)
+          },
+          type: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: 'normal'
+          },
+          lockedAt: {
+            field: 'locked_at',
+            type: DataTypes.DATE(3)
+          },
+          lastFinishedAt: {
+            field: 'last_finished_at',
+            type: DataTypes.DATE(3)
+          },
+          failedAt: {
+            field: 'failed_at',
+            type: DataTypes.DATE(3)
+          },
+          failCount: {
+            field: 'fail_count',
+            type: DataTypes.INTEGER
+          },
+          failReason: {
+            field: 'fail_reason',
+            type: DataTypes.TEXT
+          },
+          repeatTimezone: {
+            field: 'repeat_timezone',
+            type: DataTypes.STRING
+          },
+          lastRunAt: {
+            field: 'last_run_at',
+            type: DataTypes.DATE(3)
+          },
+          repeatInterval: {
+            field: 'repeat_interval',
+            type: DataTypes.STRING
+          },
+          data: {
+            type: DataTypes.JSON
+          },
+          repeatAt: {
+            field: 'repeat_at',
+            type: DataTypes.STRING
+          },
+          disabled: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false
+          },
+          progress: {
+            type: DataTypes.INTEGER
+          },
+          lastModifiedBy: {
+            field: 'last_modified_by',
+            type: DataTypes.STRING
+          },
+          fork: {
+            type: DataTypes.BOOLEAN
+          }
+        },
+        {
+          indexes: [
+            {
+              fields: ['name']
+            },
+            {
+              fields: ['priority']
+            },
+            {
+              fields: ['locked_at']
+            },
+            {
+              fields: ['next_run_at']
+            },
+            {
+              fields: ['disabled']
+            }
+          ]
+        }
       );
+      try {
+        await db.sync();
+      } catch (err: unknown) {
+        log(`sync err ${(err as Error).message}`);
+      }
+      log('successful sync done');
+    } else {
+      this.collection = db.model(modelName) as typeof AgendaJob;
     }
 
-    if (this.connectOptions.ensureIndex) {
-      log('attempting index creation');
-      try {
-        const result = await this.collection.createIndex(
-          {
-            name: 1,
-            ...this.connectOptions.sort,
-            priority: -1,
-            lockedAt: 1,
-            nextRunAt: 1,
-            disabled: 1
-          },
-          { name: 'findAndLockNextJobIndex' }
-        );
-        log('index succesfully created', result);
-      } catch (error) {
-        log('db index creation failed', error);
-        throw error;
-      }
+    if (log.enabled) {
+      log(
+        `connected with collection: ${modelName}, collection size: ${
+          typeof this.collection.count === 'function' ? await this.collection.count() : '?'
+        }`
+      );
     }
 
     this.agenda.emit('ready');
   }
 
-  private async database(url: string, options?: MongoClientOptions) {
-    let connectionString = url;
-
-    if (!hasMongoProtocol(connectionString)) {
-      connectionString = `mongodb://${connectionString}`;
-    }
-
-    const client = await MongoClient.connect(connectionString, {
-      ...options
-    });
-
-    return client.db();
+  private async database(options: IDatabaseOptions['db']) {
+    return new Sequelize({ ...options });
   }
 
   private processDbResult<DATA = unknown | void>(
@@ -247,27 +366,28 @@ export class JobDbRepository {
 
   async saveJobState(job: Job<any>): Promise<void> {
     const id = job.attrs._id;
-    const $set = {
-      lockedAt: (job.attrs.lockedAt && new Date(job.attrs.lockedAt)) || undefined,
-      nextRunAt: (job.attrs.nextRunAt && new Date(job.attrs.nextRunAt)) || undefined,
-      lastRunAt: (job.attrs.lastRunAt && new Date(job.attrs.lastRunAt)) || undefined,
+    const $set: any = {
+      lockedAt: (job.attrs.lockedAt && new Date(job.attrs.lockedAt)) || null,
+      nextRunAt: (job.attrs.nextRunAt && new Date(job.attrs.nextRunAt)) || null,
+      lastRunAt: (job.attrs.lastRunAt && new Date(job.attrs.lastRunAt)) || null,
       progress: job.attrs.progress,
       failReason: job.attrs.failReason,
       failCount: job.attrs.failCount,
       failedAt: job.attrs.failedAt && new Date(job.attrs.failedAt),
-      lastFinishedAt: (job.attrs.lastFinishedAt && new Date(job.attrs.lastFinishedAt)) || undefined
+      lastFinishedAt: (job.attrs.lastFinishedAt && new Date(job.attrs.lastFinishedAt)) || null
     };
 
     log('[job %s] save job state: \n%O', id, $set);
 
-    const result = await this.collection.updateOne(
-      { _id: id, name: job.attrs.name },
-      {
-        $set
-      }
-    );
-
-    if (!result.acknowledged || result.matchedCount !== 1) {
+    const query = { _id: id, name: job.attrs.name };
+    const item = await this.collection.findOne({
+      where: convertMongoFilterToSequelizeWhere(query)
+    });
+    if (item) {
+      await item.update({
+        ...$set
+      });
+    } else {
       throw new Error(
         `job ${id} (name: ${job.attrs.name}) cannot be updated in the database, maybe it does not exist anymore?`
       );
@@ -301,8 +421,6 @@ export class JobDbRepository {
 
       // Grab current time and set default query options for MongoDB
       const now = new Date();
-      const protect: Partial<IJobParameters> = {};
-      let update: UpdateFilter<IJobParameters> = { $set: props };
       log('current time stored as %s', now.toISOString());
 
       // If the job already had an ID, then update the properties of the job
@@ -310,76 +428,64 @@ export class JobDbRepository {
       if (id) {
         // Update the job and process the resulting data'
         log('job already has _id, calling findOneAndUpdate() using _id as query');
-        const result = await this.collection.findOneAndUpdate(
-          { _id: id, name: props.name },
-          update,
-          { returnDocument: 'after' }
-        );
-        return this.processDbResult(job, result.value as IJobParameters<DATA>);
+        const query = { _id: id, name: props.name };
+        const item = await this.collection.findOne({
+          where: convertMongoFilterToSequelizeWhere(query)
+        });
+        if (item) {
+          await item.update({
+            ...props
+          });
+          return this.processDbResult(job, item.toJSON() as IJobParameters<DATA>);
+        }
+        return this.processDbResult(job, undefined);
       }
 
       if (props.type === 'single') {
         // Job type set to 'single' so...
         log('job with type of "single" found');
 
-        // If the nextRunAt time is older than the current time, "protect" that property, meaning, don't change
-        // a scheduled job's next run time!
-        if (props.nextRunAt && props.nextRunAt <= now) {
-          log('job has a scheduled nextRunAt time, protecting that field from upsert');
-          protect.nextRunAt = props.nextRunAt;
-          delete (props as Partial<IJobParameters>).nextRunAt;
-        }
-
-        // If we have things to protect, set them in MongoDB using $setOnInsert
-        if (Object.keys(protect).length > 0) {
-          update.$setOnInsert = protect;
-        }
-
         // Try an upsert
         log(
           `calling findOneAndUpdate(${props.name}) with job name and type of "single" as query`,
-          await this.collection.findOne({
-            name: props.name,
-            type: 'single'
-          })
+          (
+            await this.collection.findOne({
+              where: {
+                name: props.name,
+                type: 'single'
+              },
+              order: [
+                ['priority', 'desc'],
+                ['lockedAt', 'asc'],
+                ['nextRunAt', 'asc']
+              ]
+            })
+          )?.toJSON()
         );
         // this call ensure a job of this name can only exists once
-        const result = await this.collection.findOneAndUpdate(
-          {
-            name: props.name,
-            type: 'single'
-          },
-          update,
-          {
-            upsert: true,
-            returnDocument: 'after'
+        const query = { name: props.name, type: 'single' };
+        const [item, isNew] = await this.collection.findOrCreate({
+          where: convertMongoFilterToSequelizeWhere(query),
+          defaults: {
+            ...query,
+            ...props
           }
-        );
-        log(
-          `findOneAndUpdate(${props.name}) with type "single" ${
-            result.lastErrorObject?.updatedExisting
-              ? 'updated existing entry'
-              : 'inserted new entry'
-          }`
-        );
-        return this.processDbResult(job, result.value as IJobParameters<DATA>);
-      }
-
-      if (job.attrs.unique) {
-        // If we want the job to be unique, then we can upsert based on the 'unique' query object that was passed in
-        const query: Filter<Omit<IJobParameters<DATA>, 'unique'>> = job.attrs.unique;
-        query.name = props.name;
-        if (job.attrs.uniqueOpts?.insertOnly) {
-          update = { $setOnInsert: props };
-        }
-
-        // Use the 'unique' query object to find an existing job or create a new one
-        log('calling findOneAndUpdate() with unique object as query: \n%O', query);
-        const result = await this.collection.findOneAndUpdate(query as IJobParameters, update, {
-          upsert: true,
-          returnDocument: 'after'
         });
-        return this.processDbResult(job, result.value as IJobParameters<DATA>);
+        if (isNew) {
+          await item.update({ ...props });
+          log(`findOneAndUpdate(${props.name}) with type "single" inserted new entry`);
+        } else {
+          // If the nextRunAt time is older than the current time, "protect" that property, meaning, don't change
+          // a scheduled job's next run time!
+          if (props.nextRunAt && props.nextRunAt <= now) {
+            log('job has a scheduled nextRunAt time, protecting that field from upsert');
+            delete (props as Partial<IJobParameters>).nextRunAt;
+          }
+
+          await item.update({ ...props });
+          log(`findOneAndUpdate(${props.name}) with type "single" updated existing entry`);
+        }
+        return this.processDbResult(job, item.toJSON() as IJobParameters<DATA>);
       }
 
       // If all else fails, the job does not exist yet so we just insert it into MongoDB
@@ -387,11 +493,8 @@ export class JobDbRepository {
         'using default behavior, inserting new job via insertOne() with props that were set: \n%O',
         props
       );
-      const result = await this.collection.insertOne(props);
-      return this.processDbResult(job, {
-        _id: result.insertedId,
-        ...props
-      } as IJobParameters<DATA>);
+      const item = await this.collection.create({ ...props });
+      return this.processDbResult(job, item.toJSON() as IJobParameters<DATA>);
     } catch (error) {
       log('processDbResult() received an error, job was not updated/created');
       throw error;

@@ -1,5 +1,5 @@
 {
-  "name": "agenda",
+  "name": "@hscloud/agenda-sequelize",
   "version": "5.0.0",
   "description": "Light weight job scheduler for Node.js",
   "main": "dist/index.js",
@@ -54,9 +54,11 @@
     "cron-parser": "^4.5.0",
     "date.js": "~0.3.3",
     "debug": "~4.3.4",
+    "dmdb": "^1.0.24984",
     "human-interval": "~2.0.1",
     "luxon": "^3.2.1",
-    "mongodb": "^4.8.1"
+    "mongodb": "^4.8.1",
+    "sequelize": "npm:@hscloud/sequelize-dmdb@^6.37.3009"
   },
   "devDependencies": {
     "eslint": "^8.21.0",

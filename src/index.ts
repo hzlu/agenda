@@ -1,12 +1,16 @@
 import { EventEmitter } from 'events';
 import * as debug from 'debug';
-
-import type { Db, Filter, MongoClientOptions, Sort } from 'mongodb';
-import { SortDirection } from 'mongodb';
+import type { Sequelize } from 'sequelize';
 import { ForkOptions } from 'child_process';
 import type { IJobDefinition } from './types/JobDefinition';
 import type { IAgendaConfig } from './types/AgendaConfig';
-import type { IDatabaseOptions, IDbConfig, IMongoOptions } from './types/DbOptions';
+import type {
+  IDatabaseOptions,
+  IDbConfig,
+  ISequelizeOptions,
+  Filter,
+  Sort
+} from './types/DbOptions';
 import type { IAgendaStatus } from './types/AgendaStatus';
 import type { IJobParameters } from './types/JobParameters';
 import { Job, JobWithId } from './Job';
@@ -81,7 +85,7 @@ export class Agenda extends EventEmitter {
     if (!jobData) {
       throw new Error('db entry not found');
     }
-    const job = new Job(this, jobData);
+    const job = new Job(this, jobData.toJSON());
     await job.runJob();
   }
 
@@ -106,7 +110,7 @@ export class Agenda extends EventEmitter {
       lockLimit?: number;
       defaultLockLifetime?: number;
       // eslint-disable-next-line @typescript-eslint/ban-types
-    } & (IDatabaseOptions | IMongoOptions | {}) &
+    } & (IDatabaseOptions | ISequelizeOptions | {}) &
       IDbConfig & {
         forkHelper?: { path: string; options?: ForkOptions };
         forkedWorker?: boolean;
@@ -146,12 +150,8 @@ export class Agenda extends EventEmitter {
   /**
    * Connect to the spec'd MongoDB server and database.
    */
-  async database(
-    address: string,
-    collection?: string,
-    options?: MongoClientOptions
-  ): Promise<Agenda> {
-    this.db = new JobDbRepository(this, { db: { address, collection, options } });
+  async database(options: IDatabaseOptions['db']): Promise<Agenda> {
+    this.db = new JobDbRepository(this, { db: options });
     await this.db.connect();
     return this;
   }
@@ -161,8 +161,8 @@ export class Agenda extends EventEmitter {
    * @param mongo
    * @param collection
    */
-  async mongo(mongo: Db, collection?: string): Promise<Agenda> {
-    this.db = new JobDbRepository(this, { mongo, db: { collection } });
+  async sequelize(sequelize: Sequelize, modelName?: string): Promise<Agenda> {
+    this.db = new JobDbRepository(this, { sequelize, db: { modelName } });
     await this.db.connect();
     return this;
   }
@@ -172,7 +172,7 @@ export class Agenda extends EventEmitter {
    * Default is { nextRunAt: 1, priority: -1 }
    * @param query
    */
-  sort(query: { [key: string]: SortDirection }): Agenda {
+  sort(query: { [key: string]: 1 | -1 | 'asc' | 'desc' }): Agenda {
     log('Agenda.sort([Object])');
     this.attrs.sort = query;
     return this;
@@ -180,8 +180,8 @@ export class Agenda extends EventEmitter {
 
   private hasDatabaseConfig(
     config: unknown
-  ): config is (IDatabaseOptions | IMongoOptions) & IDbConfig {
-    return !!((config as IDatabaseOptions)?.db?.address || (config as IMongoOptions)?.mongo);
+  ): config is (IDatabaseOptions | ISequelizeOptions) & IDbConfig {
+    return !!((config as IDatabaseOptions)?.db?.host || (config as ISequelizeOptions)?.sequelize);
   }
 
   /**
@@ -301,7 +301,7 @@ export class Agenda extends EventEmitter {
   async purge(): Promise<number> {
     const definedNames = Object.keys(this.definitions);
     log('Agenda.purge(%o)', definedNames);
-    return this.cancel({ name: { $not: { $in: definedNames } } });
+    return this.cancel({ name: { $nin: definedNames } });
   }
 
   /**

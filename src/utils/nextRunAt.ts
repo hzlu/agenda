@@ -65,6 +65,10 @@ export const computeFromInterval = (attrs: IJobParameters<any>): Date => {
     }
   }
 
+  if (typeof attrs.repeatInterval === 'string' && !Number.isNaN(+attrs.repeatInterval)) {
+    nextRunAt = new Date(lastRun.valueOf() + +attrs.repeatInterval);
+  }
+
   if (!isValidDate(nextRunAt)) {
     log(
       '[%s:%s] failed to calculate nextRunAt due to invalid repeat interval',

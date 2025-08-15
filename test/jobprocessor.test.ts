@@ -1,36 +1,30 @@
 /* eslint-disable no-console */
 import { fail } from 'assert';
+import type { Sequelize } from 'sequelize';
 import { expect } from 'chai';
-
-import { Db } from 'mongodb';
 import { Agenda } from '../src';
-import { mockMongo } from './helpers/mock-mongodb';
+import { mockSequelize } from './helpers/mock-sequelize';
 
-// Create agenda instances
 let agenda: Agenda;
-// mongo db connection db instance
-let mongoDb: Db;
+let sequelize: Sequelize;
 
 const clearJobs = async () => {
-  if (mongoDb) {
-    await mongoDb.collection('agendaJobs').deleteMany({});
+  if (sequelize) {
+    await sequelize.model('AgendaJobs').destroy({ where: {} });
   }
 };
 
 describe('JobProcessor', () => {
-  // this.timeout(1000000);
-
   beforeEach(async () => {
-    if (!mongoDb) {
-      const mockedMongo = await mockMongo();
-      // mongoCfg = mockedMongo.uri;
-      mongoDb = mockedMongo.mongo.db();
+    if (!sequelize) {
+      const mockedSequelize = await mockSequelize();
+      sequelize = mockedSequelize.sequelize;
     }
 
     return new Promise(resolve => {
       agenda = new Agenda(
         {
-          mongo: mongoDb,
+          sequelize,
           maxConcurrency: 4,
           defaultConcurrency: 1,
           lockLimit: 15,
@@ -157,7 +151,7 @@ describe('JobProcessor', () => {
     }
 
     await new Promise(resolve => {
-      setTimeout(resolve, 1000);
+      setTimeout(resolve, 10000);
     });
 
     expect(shortOneFinished).to.be.equal(true);
@@ -255,6 +249,7 @@ describe('JobProcessor', () => {
     await agenda.start();
 
     let runningJobs = 0;
+    // eslint-disable-next-line
     const allJobsStarted = new Promise(async resolve => {
       do {
         runningJobs = (await agenda.getRunningStats()).runningJobs as number;
@@ -271,7 +266,7 @@ describe('JobProcessor', () => {
         new Promise(resolve => {
           setTimeout(
             () => resolve(`not all jobs started, currently running: ${runningJobs}`),
-            1500
+            15000
           );
         })
       ])

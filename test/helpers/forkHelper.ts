@@ -1,3 +1,4 @@
+import * as dmdb from 'dmdb';
 import { Agenda } from '../../src';
 
 process.on('message', message => {
@@ -20,7 +21,17 @@ process.on('message', message => {
   // initialize Agenda in "forkedWorker" mode
   const agenda = new Agenda({ name: `subworker-${name}`, forkedWorker: true });
   // connect agenda (but do not start it)
-  await agenda.database(process.env.DB_CONNECTION!);
+  await agenda.database({
+    host: '192.168.0.122',
+    port: 30236,
+    database: 'hscloud',
+    username: 'hscloud',
+    password: 'Huasi88888888',
+    dialect: 'dmdb',
+    dialectModule: dmdb,
+    logging: false,
+    timezone: '+08:00'
+  });
 
   if (!name || !jobId) {
     throw new Error(`invalid parameters: ${JSON.stringify(process.argv)}`);
@@ -57,7 +68,7 @@ process.on('message', message => {
 })().catch(err => {
   console.error('err', err);
   if (process.send) {
-    process.send(JSON.stringify(err));
+    process.send(JSON.stringify(err.message));
   }
   process.exit(1);
 });

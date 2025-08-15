@@ -1,23 +1,46 @@
-import type { Db, MongoClientOptions, SortDirection } from 'mongodb';
+import type { Sequelize } from 'sequelize';
 
 export interface IDatabaseOptions {
   db: {
-    collection?: string;
-    address: string;
-    options?: MongoClientOptions;
+    host: string;
+    port: number;
+    database: string;
+    username: string;
+    password: string;
+    dialect: 'dmdb';
+    dialectModule: any;
+    timezone: string;
+    modelName?: string;
+    logging?: any;
   };
 }
 
-export interface IMongoOptions {
+export interface ISequelizeOptions {
   db?: {
-    collection?: string;
+    modelName?: string;
   };
-  mongo: Db;
+  sequelize: Sequelize;
 }
+
+export type Sort = { [key: string]: 1 | -1 | 'asc' | 'desc' };
 
 export interface IDbConfig {
   ensureIndex?: boolean;
-  sort?: {
-    [key: string]: SortDirection;
-  };
+  sort?: Sort;
 }
+
+export type Filter<TSchema> =
+  | Partial<TSchema>
+  | ({
+      [P in keyof TSchema]?:
+        | {
+            $in?: string[];
+            $nin?: string[];
+            $gt?: number | Date;
+            $lt?: number | Date;
+            $ne?: any;
+          }
+        | any;
+    } & {
+      [key: string]: any;
+    });

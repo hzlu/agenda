@@ -1,7 +1,7 @@
-import { Filter, ObjectId } from 'mongodb';
+import type { Filter } from './DbOptions';
 
 export interface IJobParameters<DATA = unknown | void> {
-  _id?: ObjectId;
+  _id?: string;
 
   name: string;
   priority: number;
@@ -12,7 +12,7 @@ export interface IJobParameters<DATA = unknown | void> {
    */
   type: 'normal' | 'single';
 
-  lockedAt?: Date;
+  lockedAt?: Date | null;
   lastFinishedAt?: Date;
   failedAt?: Date;
   failCount?: number;
