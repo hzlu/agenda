@@ -17,7 +17,11 @@ export function convertMongoFilterToSequelizeWhere(
       // 处理链式点号
       const keys = key.split('.');
       let currentLevel = sequelizeWhere;
-
+      // 查询data下属性要用JSON_VALUE转换
+      if (keys[0] === 'data' && keys.length === 2) {
+        currentLevel[`JSON_VALUE(data, '$.${keys[1]}')`] = value;
+        continue;
+      }
       keys.forEach((k, index) => {
         if (index === keys.length - 1) {
           // 最后一个键，处理值
